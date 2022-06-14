@@ -7,6 +7,7 @@ use tracing_subscriber::{
     filter, fmt::format::JsonVisitor, layer::SubscriberExt, util::SubscriberInitExt, Layer,
 };
 
+// nc -l 8080
 const SERVER: &str = "http://127.0.0.1:8080";
 
 fn make_visitor(value: &mut String) -> JsonVisitor<'_> {
@@ -25,7 +26,7 @@ async fn main() {
     });
 
     // Create the layer
-    let (layer, mut responses) = ServiceLayer::new_unbounded(client, make_visitor);
+    let (layer, mut responses) = ServiceLayer::new(client, make_visitor);
     let layer = layer.with_filter(filter::Targets::new().with_target("basic", Level::INFO));
 
     // Spawn the driver

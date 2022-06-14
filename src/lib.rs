@@ -2,14 +2,10 @@ mod response_stream;
 
 pub use response_stream::*;
 
-use std::{fmt, marker::PhantomData};
+use std::fmt;
 
-use tokio::sync::mpsc::{
-    channel,
-    error::{SendError, TrySendError},
-    unbounded_channel, Sender, UnboundedSender,
-};
-use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
+use tokio::sync::mpsc::{channel, Sender};
+use tokio_stream::wrappers::ReceiverStream;
 use tower::Service;
 use tracing_core::{Event, Subscriber};
 use tracing_subscriber::{
@@ -21,35 +17,12 @@ use tracing_subscriber::{
 
 /// A [`Layer`] which uses a [`MakeVisitor`](field::MakeVisitor) to construct a `Request` and then
 /// sends it to a [`Service<Request>`].
-pub struct ServiceLayer<Request, MakeVisitor, Sink = ()> {
-    _request: PhantomData<Request>,
+pub struct ServiceLayer<Request, MakeVisitor> {
     make_visitor: MakeVisitor,
-    sink: Sink,
+    sender: Sender<Request>,
 }
 
-impl<Request, MakeVisitor> ServiceLayer<Request, MakeVisitor, UnboundedSender<Request>> {
-    /// Constructs a `ServiceLayer` with an unbounded queue being drained into the [`Service`].
-    pub fn new_unbounded<Svc>(
-        service: Svc,
-        make_visitor: MakeVisitor,
-    ) -> (Self, ResponseStream<Svc, UnboundedReceiverStream<Request>>)
-    where
-        Svc: Service<Request>,
-    {
-        let (sink, stream) = unbounded_channel();
-        let stream = UnboundedReceiverStream::new(stream);
-        let layer = Self {
-            _request: PhantomData,
-            sink,
-            make_visitor,
-        };
-        let handle = ResponseStream::new(service, stream);
-
-        (layer, handle)
-    }
-}
-
-impl<Request, MakeVisitor> ServiceLayer<Request, MakeVisitor, Sender<Request>> {
+impl<Request, MakeVisitor> ServiceLayer<Request, MakeVisitor> {
     const DEFAULT_BUFFER: usize = 32;
 
     /// Constructs a `ServiceLayer` with an bounded queue being drained into the [`Service`].
@@ -63,11 +36,10 @@ impl<Request, MakeVisitor> ServiceLayer<Request, MakeVisitor, Sender<Request>> {
     where
         Svc: Service<Request>,
     {
-        let (sink, stream) = channel(buffer);
-        let stream = ReceiverStream::new(stream);
+        let (sender, receiver) = channel(buffer);
+        let stream = ReceiverStream::new(receiver);
         let layer = Self {
-            _request: PhantomData,
-            sink,
+            sender,
             make_visitor,
         };
         let handle = ResponseStream::new(service, stream);
@@ -90,34 +62,7 @@ impl<Request, MakeVisitor> ServiceLayer<Request, MakeVisitor, Sender<Request>> {
     }
 }
 
-mod sealed {
-    use super::*;
-
-    /// Allows for polymorphism over [`UnboundedSender`] and [`Sender`].
-    pub trait SyncSender<T> {
-        type Error;
-
-        fn sink_send(&self, value: T) -> Result<(), Self::Error>;
-    }
-
-    impl<T> SyncSender<T> for UnboundedSender<T> {
-        type Error = SendError<T>;
-
-        fn sink_send(&self, value: T) -> Result<(), SendError<T>> {
-            self.send(value)
-        }
-    }
-
-    impl<T> SyncSender<T> for Sender<T> {
-        type Error = TrySendError<T>;
-
-        fn sink_send(&self, value: T) -> Result<(), Self::Error> {
-            self.try_send(value)
-        }
-    }
-}
-
-impl<S, Request, MakeVisitor, Sink> Layer<S> for ServiceLayer<Request, MakeVisitor, Sink>
+impl<S, Request, MakeVisitor> Layer<S> for ServiceLayer<Request, MakeVisitor>
 where
     S: Subscriber,
     for<'a> S: LookupSpan<'a>,
@@ -128,9 +73,6 @@ where
     MakeVisitor: 'static,
     for<'a> <MakeVisitor as field::MakeVisitor<&'a mut Request>>::Visitor:
         VisitOutput<Result<(), fmt::Error>>,
-
-    Sink: sealed::SyncSender<Request>,
-    Sink: 'static,
 {
     // TODO: Add spans
 
@@ -148,7 +90,7 @@ where
             // TODO
         };
 
-        if self.sink.sink_send(request).is_err() {
+        if self.sender.try_send(request).is_err() {
             // TODO: This can error in two ways, receiver dropped and receiver full (in the case of
             // a bounded sender).
         };
