@@ -5,7 +5,6 @@ pub use response_stream::*;
 use std::fmt;
 
 use tokio::sync::mpsc::{channel, Sender};
-use tokio_stream::wrappers::ReceiverStream;
 use tower::Service;
 use tracing_core::{Event, Subscriber};
 use tracing_subscriber::{
@@ -32,17 +31,16 @@ impl<Request, MakeVisitor> ServiceLayer<Request, MakeVisitor> {
         service: Svc,
         make_visitor: MakeVisitor,
         buffer: usize,
-    ) -> (Self, ResponseStream<Svc, ReceiverStream<Request>>)
+    ) -> (Self, ResponseStream<Request, Svc>)
     where
         Svc: Service<Request>,
     {
         let (sender, receiver) = channel(buffer);
-        let stream = ReceiverStream::new(receiver);
         let layer = Self {
             sender,
             make_visitor,
         };
-        let handle = ResponseStream::new(service, stream);
+        let handle = ResponseStream::new(service, receiver);
 
         (layer, handle)
     }
@@ -51,10 +49,7 @@ impl<Request, MakeVisitor> ServiceLayer<Request, MakeVisitor> {
     ///
     /// If the number of items overflows the default queue capacity (32) it will fail to process
     /// logs.
-    pub fn new<Svc>(
-        service: Svc,
-        visitor: MakeVisitor,
-    ) -> (Self, ResponseStream<Svc, ReceiverStream<Request>>)
+    pub fn new<Svc>(service: Svc, visitor: MakeVisitor) -> (Self, ResponseStream<Request, Svc>)
     where
         Svc: Service<Request>,
     {

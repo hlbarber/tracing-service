@@ -1,5 +1,5 @@
+use futures_util::StreamExt;
 use hyper::{client::Client, Body, Request};
-use tokio_stream::StreamExt;
 use tower::ServiceExt;
 use tracing::{info, Level};
 use tracing_service::ServiceLayer;
